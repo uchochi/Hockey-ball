@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>StackOrPunt - Glow Hockey</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="controls">
+        <button id="restart-btn" class="control-btn">Restart</button>
+        <button id="pause-btn" class="control-btn">Pause</button>
+    </div>
+
+    <div class="score-container">
+        <div class="score-section ai-score-section">
+            <div class="player-name" id="teamAName">OPPONENT</div>
+            <div class="score" id="aiScore">0</div>
+        </div>
+        <div class="timer-section" id="timerSection" style="display:none;">
+            <div class="timer" id="gameTimer">03:00</div>
+            <div class="round-info" id="roundInfo">Round 1 of 3</div>
+        </div>
+        <div class="score-section player-score-section">
+            <div class="player-name" id="teamBName">YOU</div>
+            <div class="score" id="playerScore">0</div>
+        </div>
+    </div>
+
+    <div class="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div class="game-status" id="gameStatus">Touch the ball to start!</div>
+    </div>
+
+    <!-- Tips & Tricks Overlay -->
+    <div class="tips-overlay" id="tipsOverlay">
+        <div class="tips-content">
+            <div class="tips-icon">💡</div>
+            <p class="tips-text" id="tipsText"></p>
+            <div class="tips-progress">
+                <div class="tips-progress-bar" id="tipsProgressBar"></div>
+            </div>
+            <span class="tips-timer" id="tipsTimer">7</span>
+        </div>
+    </div>
+
+    <!-- Chat Overlay -->
+    <div class="chat-overlay" id="chatOverlay">
+        <div class="chat-content">
+            <div class="chat-header">
+                <span id="chatPausedBy">Game Paused</span>
+                <button id="chatClose" class="chat-close-btn">✕</button>
+            </div>
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-row">
+                <input type="text" id="chatInput" class="chat-input" placeholder="Type a message..." maxlength="200" />
+                <button id="chatSend" class="chat-send-btn">Send</button>
+            </div>
+            <button id="chatReady" class="chat-ready-btn">Ready to Resume</button>
+        </div>
+    </div>
+
+    <!-- Game Over -->
+    <div class="game-over" id="gameOver">
+        <h2 id="winnerText">Game Over</h2>
+        <p class="final-score" id="finalScore"></p>
+        <button id="restart-game" class="restart-btn">Play Again</button>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
