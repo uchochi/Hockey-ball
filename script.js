@@ -1,12 +1,12 @@
 /**
- * StackOrPunt - Glow Hockey (Layer 2)
+ * Burkwin - Glow Hockey (Layer 2)
  * 
  * Features:
  * - postMessage API for Layer 1 communication
  * - 7 AI difficulty tiers (Beginner → The-Expert)
  * - Countdown (timed) + Tournament (first-to-7) modes
  * - Team relay (players rotate per round/goal)
- * - Tips & Tricks 7-second breaks (Real SOL mode only)
+ * - Tips & Tricks 7-second breaks (Real USDT mode only)
  * - Real-time chat with synchronized pause
  * - Secure GAME_OVER handshake with hash token
  */
@@ -78,14 +78,34 @@ window.addEventListener("load", function () {
   };
 
   // ─── AI Difficulty Profiles (1-7) ───
+  // Human-emulating reactive striker model.
+  //  - reactionMs: how slowly the bot starts moving once ball enters its half (lag)
+  //  - reactionLine: y ratio (0..1). When ball.y < this, bot becomes "alert" and tracks aggressively
+  //  - strikeLine: y ratio. When ball crosses this, bot lunges forward to strike
+  //  - trackSpeed / strikeSpeed: paddle px/frame in tracking vs striking modes
+  //  - aimJitter: random px noise added to predicted target (lower = more accurate)
+  //  - missChance: chance per "should-strike" that bot fakes the strike (whiff)
+  //  - feintChance: chance per second of doing a small idle feint when ball is far
+  //  - homeY ratio: where bot returns to when ball is in opponent half
   const AI_PROFILES = {
-    1: { speed: 3, prediction: 0.1, randomness: 150, name: "Beginner" },
-    2: { speed: 4, prediction: 0.2, randomness: 120, name: "Strong-Beginner" },
-    3: { speed: 5, prediction: 0.35, randomness: 90, name: "Intermediate" },
-    4: { speed: 6, prediction: 0.5, randomness: 60, name: "Strong-Intermediate" },
-    5: { speed: 7.5, prediction: 0.7, randomness: 30, name: "Advance" },
-    6: { speed: 9, prediction: 0.85, randomness: 15, name: "Strong-Advance" },
-    7: { speed: 11, prediction: 0.95, randomness: 5, name: "The-Expert" }
+    1: { name: "Beginner",            reactionMs: 380, reactionLine: 0.42, strikeLine: 0.30, trackSpeed: 3,    strikeSpeed: 5,  retreatSpeed: 2.2, aimJitter: 140, missChance: 0.30, feintChance: 0.04, homeY: 0.13 },
+    2: { name: "Strong-Beginner",     reactionMs: 300, reactionLine: 0.45, strikeLine: 0.32, trackSpeed: 4,    strikeSpeed: 6,  retreatSpeed: 2.8, aimJitter: 110, missChance: 0.20, feintChance: 0.05, homeY: 0.13 },
+    3: { name: "Intermediate",        reactionMs: 230, reactionLine: 0.48, strikeLine: 0.35, trackSpeed: 5,    strikeSpeed: 7.5,retreatSpeed: 3.4, aimJitter: 80,  missChance: 0.13, feintChance: 0.07, homeY: 0.14 },
+    4: { name: "Strong-Intermediate", reactionMs: 170, reactionLine: 0.50, strikeLine: 0.38, trackSpeed: 6,    strikeSpeed: 9,  retreatSpeed: 4,   aimJitter: 55,  missChance: 0.08, feintChance: 0.08, homeY: 0.14 },
+    5: { name: "Advance",             reactionMs: 120, reactionLine: 0.52, strikeLine: 0.40, trackSpeed: 7.5,  strikeSpeed: 11, retreatSpeed: 4.6, aimJitter: 32,  missChance: 0.04, feintChance: 0.10, homeY: 0.15 },
+    6: { name: "Strong-Advance",      reactionMs: 80,  reactionLine: 0.55, strikeLine: 0.42, trackSpeed: 9,    strikeSpeed: 13, retreatSpeed: 5.2, aimJitter: 18,  missChance: 0.02, feintChance: 0.12, homeY: 0.15 },
+    7: { name: "The-Expert",          reactionMs: 45,  reactionLine: 0.58, strikeLine: 0.44, trackSpeed: 11,   strikeSpeed: 15, retreatSpeed: 6,   aimJitter: 8,   missChance: 0.01, feintChance: 0.14, homeY: 0.16 }
+  };
+
+  // Per-bot persistent AI state (resets each round/serve)
+  const aiBotState = {
+    alertSinceMs: 0,        // wall-clock when ball first crossed reaction line
+    lastDecisionMs: 0,
+    feintTargetX: null,     // small offset target for idle feints
+    feintUntilMs: 0,
+    chosenAimX: null,       // target x on player goal we're aiming for in current strike
+    strikeCommitUntilMs: 0, // we keep committing to a lunge until this time
+    lastBallY: 0
   };
 
   function getCurrentAIDifficulty() {
@@ -116,7 +136,7 @@ window.addEventListener("load", function () {
 
   function sendToLayer1(type, payload) {
     if (window.parent !== window) {
-      window.parent.postMessage({ type, payload }, "https://stackorpunt.lovable.app");
+      window.parent.postMessage({ type, payload }, "*");
     }
   }
 
@@ -272,7 +292,7 @@ window.addEventListener("load", function () {
       return;
     }
 
-    // Tips break between rounds (Real SOL only)
+    // Tips break between rounds (Real USDT only)
     if (!matchConfig.isDemoMode && matchConfig.tips.length > 0) {
       showTipsBreak(() => {
         advanceRound();
@@ -307,7 +327,7 @@ window.addEventListener("load", function () {
     }
   }
 
-  // ─── Tips & Tricks (7-second break, Real SOL only) ───
+  // ─── Tips & Tricks (7-second break, Real USDT only) ───
   function showTipsBreak(callback) {
     gameState.isTipsPause = true;
     const overlay = document.getElementById("tipsOverlay");
@@ -531,358 +551,4 @@ window.addEventListener("load", function () {
     gameContext.shadowBlur = glow;
     gameContext.fillStyle = "#ffff00";
     gameContext.beginPath();
-    gameContext.arc(gameState.gameBall.xPosition, gameState.gameBall.yPosition, gameState.gameBall.radius, 0, Math.PI * 2);
-    gameContext.fill();
-    gameContext.strokeStyle = "#ffaa00";
-    gameContext.lineWidth = 3;
-    gameContext.stroke();
-    gameContext.fillStyle = "#ffffff";
-    gameContext.beginPath();
-    gameContext.arc(gameState.gameBall.xPosition - 4, gameState.gameBall.yPosition - 4, 4, 0, Math.PI * 2);
-    gameContext.fill();
-    gameContext.shadowBlur = 0;
-  }
-
-  // ─── Physics ───
-  function updateBallPosition() {
-    if (!gameState.isGameRunning || gameState.isPaused) return;
-
-    gameState.gameBall.xPosition += gameState.gameBall.velocityX;
-    gameState.gameBall.yPosition += gameState.gameBall.velocityY;
-
-    // Side walls
-    if (gameState.gameBall.xPosition <= gameState.gameBall.radius ||
-      gameState.gameBall.xPosition >= gameCanvas.width - gameState.gameBall.radius) {
-      gameState.gameBall.velocityX *= -0.9;
-      gameState.gameBall.xPosition = Math.max(gameState.gameBall.radius,
-        Math.min(gameCanvas.width - gameState.gameBall.radius, gameState.gameBall.xPosition));
-    }
-
-    const goalW = gameCanvas.width * 0.5;
-    const goalX = (gameCanvas.width - goalW) / 2;
-
-    // Top goal (player scores)
-    if (gameState.gameBall.yPosition <= gameState.gameBall.radius) {
-      if (gameState.gameBall.xPosition >= goalX && gameState.gameBall.xPosition <= goalX + goalW) {
-        gameState.playerPaddle.score++;
-        gameState.lastScorer = "player";
-        updateScoreDisplay();
-        onGoalScored("player");
-        return;
-      }
-      gameState.gameBall.velocityY *= -0.9;
-      gameState.gameBall.yPosition = gameState.gameBall.radius;
-    }
-
-    // Bottom goal (AI scores)
-    if (gameState.gameBall.yPosition >= gameCanvas.height - gameState.gameBall.radius) {
-      if (gameState.gameBall.xPosition >= goalX && gameState.gameBall.xPosition <= goalX + goalW) {
-        gameState.aiPaddle.score++;
-        gameState.lastScorer = "ai";
-        updateScoreDisplay();
-        onGoalScored("ai");
-        return;
-      }
-      gameState.gameBall.velocityY *= -0.9;
-      gameState.gameBall.yPosition = gameCanvas.height - gameState.gameBall.radius;
-    }
-  }
-
-  function onGoalScored(scorer) {
-    gameState.totalGoalsForRelay++;
-
-    // Tournament mode: check winning score
-    if (matchConfig.gameMode === "tournament") {
-      if (gameState.playerPaddle.score >= matchConfig.winningScore) {
-        endGame(`${matchConfig.teamB[0]?.name || "You"} Win!`);
-        return;
-      }
-      if (gameState.aiPaddle.score >= matchConfig.winningScore) {
-        endGame(`${matchConfig.teamA[0]?.name || "Opponent"} Wins!`);
-        return;
-      }
-
-      // Tournament relay: rotate on every goal
-      if (matchConfig.teamA.length > 1 || matchConfig.teamB.length > 1) {
-        rotateTeamPlayers();
-        updatePlayerNames();
-      }
-
-      // Tips break after goal (Real SOL only, tournament mode)
-      if (!matchConfig.isDemoMode && matchConfig.tips.length > 0) {
-        showTipsBreak(() => {
-          resetBall(scorer === "player" ? "ai" : "player");
-        });
-      } else {
-        resetBall(scorer === "player" ? "ai" : "player");
-      }
-    } else {
-      // Countdown mode: just reset ball, no win check per goal
-      resetBall(scorer === "player" ? "ai" : "player");
-    }
-  }
-
-  function checkPaddleCollision(paddle) {
-    const b = gameState.gameBall;
-    const dx = b.xPosition - paddle.xPosition;
-    const dy = b.yPosition - paddle.yPosition;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const minDist = b.radius + paddle.radius;
-
-    if (dist < minDist) {
-      const angle = Math.atan2(dy, dx);
-      const speed = Math.sqrt(b.velocityX * b.velocityX + b.velocityY * b.velocityY);
-      const newSpeed = Math.min(b.maxSpeed, Math.max(b.minSpeed, speed * 1.05));
-
-      b.velocityX = Math.cos(angle) * newSpeed;
-      b.velocityY = Math.sin(angle) * newSpeed;
-
-      const overlap = minDist - dist;
-      b.xPosition += Math.cos(angle) * overlap;
-      b.yPosition += Math.sin(angle) * overlap;
-    }
-  }
-
-  // ─── AI with 7 Difficulty Tiers ───
-  function updateAIPaddle() {
-    if (!gameState.isGameRunning || gameState.isPaused) return;
-
-    const diff = getCurrentAIDifficulty();
-    let targetX = gameState.gameBall.xPosition;
-
-    // Predict ball trajectory
-    if (gameState.gameBall.velocityY < 0 && gameState.gameBall.yPosition < gameCanvas.height * 0.7) {
-      const timeToReach = Math.abs(gameState.gameBall.yPosition - gameState.aiPaddle.yPosition) /
-        Math.max(1, Math.abs(gameState.gameBall.velocityY));
-      targetX = gameState.gameBall.xPosition + (gameState.gameBall.velocityX * timeToReach * diff.prediction);
-
-      // Wall bounce prediction for higher levels
-      if (diff.prediction > 0.5) {
-        // Simple bounce prediction
-        let predX = targetX;
-        if (predX < 0) predX = -predX;
-        if (predX > gameCanvas.width) predX = 2 * gameCanvas.width - predX;
-        targetX = predX;
-      }
-
-      targetX += (Math.random() - 0.5) * diff.randomness;
-    }
-
-    // Defensive positioning when ball going away
-    if (gameState.gameBall.velocityY > 0) {
-      targetX = gameCanvas.width / 2 + (Math.random() - 0.5) * 40;
-    }
-
-    const distance = targetX - gameState.aiPaddle.xPosition;
-    if (Math.abs(distance) > 3) {
-      const moveSpeed = Math.min(diff.speed, Math.abs(distance) * 0.3);
-      gameState.aiPaddle.xPosition += distance > 0 ? moveSpeed : -moveSpeed;
-    }
-
-    // Vertical movement for higher difficulties
-    if (diff.prediction > 0.4 && gameState.gameBall.velocityY < 0) {
-      const idealY = gameCanvas.height * 0.15 + (gameCanvas.height * 0.1 * (1 - diff.prediction));
-      const yDist = idealY - gameState.aiPaddle.yPosition;
-      if (Math.abs(yDist) > 5) {
-        gameState.aiPaddle.yPosition += yDist * 0.05;
-      }
-    }
-
-    gameState.aiPaddle.xPosition = Math.max(
-      gameState.aiPaddle.radius,
-      Math.min(gameCanvas.width - gameState.aiPaddle.radius, gameState.aiPaddle.xPosition)
-    );
-    gameState.aiPaddle.yPosition = Math.max(
-      gameState.aiPaddle.radius + 30,
-      Math.min(gameCanvas.height / 2 - 60, gameState.aiPaddle.yPosition)
-    );
-  }
-
-  // ─── Input ───
-  function handleUserInput(x, y) {
-    if (!gameState.isGameRunning && !gameState.isPaused && !gameState.isTipsPause && !gameState.isChatPause) {
-      const dx = x - gameState.gameBall.xPosition;
-      const dy = y - gameState.gameBall.yPosition;
-      if (Math.sqrt(dx * dx + dy * dy) < gameState.gameBall.radius + 30) {
-        startBallMovement("player");
-        return;
-      }
-    }
-    if (y > gameCanvas.height / 2 && !gameState.isPaused && !gameState.isTipsPause && !gameState.isChatPause) {
-      gameState.playerPaddle.xPosition = Math.max(
-        gameState.playerPaddle.radius,
-        Math.min(gameCanvas.width - gameState.playerPaddle.radius, x)
-      );
-      gameState.playerPaddle.yPosition = Math.max(
-        gameCanvas.height / 2 + 60,
-        Math.min(gameCanvas.height - gameState.playerPaddle.radius - 30, y)
-      );
-    }
-  }
-
-  gameCanvas.addEventListener("touchstart", (e) => {
-    e.preventDefault();
-    const r = gameCanvas.getBoundingClientRect();
-    const t = e.touches[0];
-    handleUserInput(
-      (t.clientX - r.left) * (gameCanvas.width / r.width),
-      (t.clientY - r.top) * (gameCanvas.height / r.height)
-    );
-  });
-  gameCanvas.addEventListener("touchmove", (e) => {
-    e.preventDefault();
-    const r = gameCanvas.getBoundingClientRect();
-    const t = e.touches[0];
-    handleUserInput(
-      (t.clientX - r.left) * (gameCanvas.width / r.width),
-      (t.clientY - r.top) * (gameCanvas.height / r.height)
-    );
-  });
-  gameCanvas.addEventListener("mousedown", (e) => {
-    const r = gameCanvas.getBoundingClientRect();
-    handleUserInput(
-      (e.clientX - r.left) * (gameCanvas.width / r.width),
-      (e.clientY - r.top) * (gameCanvas.height / r.height)
-    );
-  });
-  gameCanvas.addEventListener("mousemove", (e) => {
-    const r = gameCanvas.getBoundingClientRect();
-    const y = (e.clientY - r.top) * (gameCanvas.height / r.height);
-    if (y > gameCanvas.height / 2) {
-      handleUserInput(
-        (e.clientX - r.left) * (gameCanvas.width / r.width), y
-      );
-    }
-  });
-
-  // ─── Score / End ───
-  function updateScoreDisplay() {
-    document.getElementById("playerScore").textContent = gameState.playerPaddle.score;
-    document.getElementById("aiScore").textContent = gameState.aiPaddle.score;
-  }
-
-  function endGame(winnerText) {
-    gameState.isGameRunning = false;
-    if (gameState.timerInterval) {
-      clearInterval(gameState.timerInterval);
-      gameState.timerInterval = null;
-    }
-    document.getElementById("winnerText").textContent = winnerText;
-    document.getElementById("finalScore").textContent =
-      `${matchConfig.teamA[0]?.name || "Opponent"} ${gameState.aiPaddle.score} - ${gameState.playerPaddle.score} ${matchConfig.teamB[0]?.name || "You"}`;
-    document.getElementById("gameOver").style.display = "flex";
-
-    // Send GAME_OVER to Layer 1
-    const result = {
-      matchId: matchConfig.matchId,
-      winnerTeam: gameState.playerPaddle.score > gameState.aiPaddle.score ? "B" : "A",
-      scoreA: gameState.aiPaddle.score,
-      scoreB: gameState.playerPaddle.score,
-      timestamp: Date.now()
-    };
-
-    // Simple hash using secret token (in production, use proper HMAC)
-    if (matchConfig.secretToken) {
-      result.hash = simpleHash(matchConfig.secretToken + JSON.stringify({
-        matchId: result.matchId,
-        winnerTeam: result.winnerTeam,
-        scoreA: result.scoreA,
-        scoreB: result.scoreB
-      }));
-    }
-
-    sendToLayer1("GAME_OVER", result);
-  }
-
-  // Simple hash for demo (production should use crypto.subtle HMAC)
-  function simpleHash(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash;
-    }
-    return hash.toString(36);
-  }
-
-  function restartGame() {
-    gameState.playerPaddle.score = 0;
-    gameState.aiPaddle.score = 0;
-    gameState.playerPaddle.xPosition = gameCanvas.width / 2;
-    gameState.playerPaddle.yPosition = gameCanvas.height * 0.85;
-    gameState.aiPaddle.xPosition = gameCanvas.width / 2;
-    gameState.aiPaddle.yPosition = gameCanvas.height * 0.15;
-    gameState.isGameStarted = false;
-    gameState.isPaused = false;
-    gameState.isTipsPause = false;
-    gameState.isChatPause = false;
-    gameState.lastScorer = null;
-    gameState.currentRound = 1;
-    gameState.roundTimeRemaining = matchConfig.roundDurationSec;
-    gameState.currentTeamAPlayer = 0;
-    gameState.currentTeamBPlayer = 0;
-    gameState.totalGoalsForRelay = 0;
-    gameState.tipsShown = [];
-    if (gameState.timerInterval) {
-      clearInterval(gameState.timerInterval);
-      gameState.timerInterval = null;
-    }
-    if (matchConfig.gameMode === "countdown") {
-      updateTimerDisplay();
-      updateRoundDisplay();
-    }
-    resetBall();
-    updateScoreDisplay();
-    updatePlayerNames();
-    document.getElementById("gameOver").style.display = "none";
-    document.getElementById("pause-btn").textContent = "Pause";
-  }
-
-  function togglePause() {
-    if (gameState.isTipsPause || gameState.isChatPause) return;
-    gameState.isPaused = !gameState.isPaused;
-    const btn = document.getElementById("pause-btn");
-    if (gameState.isPaused) {
-      btn.textContent = "Resume";
-      // Open chat overlay for multiplayer pause
-      const currentPlayer = matchConfig.teamB[gameState.currentTeamBPlayer] || { name: "You" };
-      openChat(currentPlayer.name);
-    } else {
-      btn.textContent = "Pause";
-      document.getElementById("chatOverlay").classList.remove("active");
-      gameState.isChatPause = false;
-    }
-  }
-
-  // ─── Game Loop ───
-  function gameLoop() {
-    if (!gameState.isPaused && !gameState.isTipsPause && !gameState.isChatPause) {
-      updateBallPosition();
-      updateAIPaddle();
-      checkPaddleCollision(gameState.playerPaddle);
-      checkPaddleCollision(gameState.aiPaddle);
-    }
-    gameContext.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
-    drawGameField();
-    drawPaddle(gameState.playerPaddle, "#ff0066");
-    drawPaddle(gameState.aiPaddle, "#00ff66");
-    drawBall();
-    requestAnimationFrame(gameLoop);
-  }
-
-  // ─── Button Events ───
-  document.getElementById("pause-btn").addEventListener("click", () => {
-    if (gameState.isGameStarted) togglePause();
-  });
-  document.getElementById("restart-btn").addEventListener("click", restartGame);
-  document.getElementById("restart-game").addEventListener("click", restartGame);
-
-  // ─── Init ───
-  updatePlayerNames();
-  updateScoreDisplay();
-  resetBall();
-  gameLoop();
-
-  // Notify Layer 1 that Layer 2 is loaded
-  sendToLayer1("LAYER2_LOADED", { status: "loaded" });
-});
+    gameContext.arc(gameState.gameBall.xPosition, gameState
