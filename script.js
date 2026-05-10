@@ -551,4 +551,436 @@ window.addEventListener("load", function () {
     gameContext.shadowBlur = glow;
     gameContext.fillStyle = "#ffff00";
     gameContext.beginPath();
-    gameContext.arc(gameState.gameBall.xPosition, gameState
+    gameContext.arc(gameState.gameBall.xPosition, gameState.gameBall.yPosition, gameState.gameBall.radius, 0, Math.PI * 2);
+    gameContext.fill();
+    gameContext.strokeStyle = "#ffaa00";
+    gameContext.lineWidth = 3;
+    gameContext.stroke();
+    gameContext.fillStyle = "#ffffff";
+    gameContext.beginPath();
+    gameContext.arc(gameState.gameBall.xPosition - 4, gameState.gameBall.yPosition - 4, 4, 0, Math.PI * 2);
+    gameContext.fill();
+    gameContext.shadowBlur = 0;
+  }
+
+  // ─── Physics ───
+  function updateBallPosition() {
+    if (!gameState.isGameRunning || gameState.isPaused) return;
+
+    gameState.gameBall.xPosition += gameState.gameBall.velocityX;
+    gameState.gameBall.yPosition += gameState.gameBall.velocityY;
+
+    // Side walls
+    if (gameState.gameBall.xPosition <= gameState.gameBall.radius ||
+      gameState.gameBall.xPosition >= gameCanvas.width - gameState.gameBall.radius) {
+      gameState.gameBall.velocityX *= -0.9;
+      gameState.gameBall.xPosition = Math.max(gameState.gameBall.radius,
+        Math.min(gameCanvas.width - gameState.gameBall.radius, gameState.gameBall.xPosition));
+    }
+
+    const goalW = gameCanvas.width * 0.5;
+    const goalX = (gameCanvas.width - goalW) / 2;
+
+    // Top goal (player scores)
+    if (gameState.gameBall.yPosition <= gameState.gameBall.radius) {
+      if (gameState.gameBall.xPosition >= goalX && gameState.gameBall.xPosition <= goalX + goalW) {
+        gameState.playerPaddle.score++;
+        gameState.lastScorer = "player";
+        updateScoreDisplay();
+        onGoalScored("player");
+        return;
+      }
+      gameState.gameBall.velocityY *= -0.9;
+      gameState.gameBall.yPosition = gameState.gameBall.radius;
+    }
+
+    // Bottom goal (AI scores)
+    if (gameState.gameBall.yPosition >= gameCanvas.height - gameState.gameBall.radius) {
+      if (gameState.gameBall.xPosition >= goalX && gameState.gameBall.xPosition <= goalX + goalW) {
+        gameState.aiPaddle.score++;
+        gameState.lastScorer = "ai";
+        updateScoreDisplay();
+        onGoalScored("ai");
+        return;
+      }
+      gameState.gameBall.velocityY *= -0.9;
+      gameState.gameBall.yPosition = gameCanvas.height - gameState.gameBall.radius;
+    }
+  }
+
+  function onGoalScored(scorer) {
+    gameState.totalGoalsForRelay++;
+
+    // Tournament mode: check winning score
+    if (matchConfig.gameMode === "tournament") {
+      if (gameState.playerPaddle.score >= matchConfig.winningScore) {
+        endGame(`${matchConfig.teamB[0]?.name || "You"} Win!`);
+        return;
+      }
+      if (gameState.aiPaddle.score >= matchConfig.winningScore) {
+        endGame(`${matchConfig.teamA[0]?.name || "Opponent"} Wins!`);
+        return;
+      }
+
+      // Tournament relay: rotate on every goal
+      if (matchConfig.teamA.length > 1 || matchConfig.teamB.length > 1) {
+        rotateTeamPlayers();
+        updatePlayerNames();
+      }
+
+      // Tips break after goal (Real USDT only, tournament mode)
+      if (!matchConfig.isDemoMode && matchConfig.tips.length > 0) {
+        showTipsBreak(() => {
+          resetBall(scorer === "player" ? "ai" : "player");
+        });
+      } else {
+        resetBall(scorer === "player" ? "ai" : "player");
+      }
+    } else {
+      // Countdown mode: just reset ball, no win check per goal
+      resetBall(scorer === "player" ? "ai" : "player");
+    }
+  }
+
+  function checkPaddleCollision(paddle) {
+    const b = gameState.gameBall;
+    const dx = b.xPosition - paddle.xPosition;
+    const dy = b.yPosition - paddle.yPosition;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const minDist = b.radius + paddle.radius;
+
+    if (dist < minDist) {
+      const angle = Math.atan2(dy, dx);
+      const speed = Math.sqrt(b.velocityX * b.velocityX + b.velocityY * b.velocityY);
+      const newSpeed = Math.min(b.maxSpeed, Math.max(b.minSpeed, speed * 1.05));
+
+      b.velocityX = Math.cos(angle) * newSpeed;
+      b.velocityY = Math.sin(angle) * newSpeed;
+
+      const overlap = minDist - dist;
+      b.xPosition += Math.cos(angle) * overlap;
+      b.yPosition += Math.sin(angle) * overlap;
+    }
+  }
+
+  // ─── AI: Reactive Striker (human-emulating) ───
+  // The bot lives near its goal. As the ball approaches, it "wakes up" after a
+  // reaction delay, slides to intercept with some aim noise, then LUNGES forward
+  // to strike (mimicking a human swinging the paddle). When the ball is in the
+  // opponent's half it returns to a home position with occasional small feints.
+  function updateAIPaddle() {
+    if (!gameState.isGameRunning || gameState.isPaused) return;
+
+    const ai = gameState.aiPaddle;
+    const ball = gameState.gameBall;
+    const diff = getCurrentAIDifficulty();
+    const now = performance.now();
+    const H = gameCanvas.height;
+    const W = gameCanvas.width;
+
+    const ballInOurHalf = ball.yPosition < H / 2;
+    const ballApproaching = ball.velocityY < 0; // moving toward bot (top)
+    const reactionLineY = H * diff.reactionLine;
+    const strikeLineY = H * diff.strikeLine;
+    const homeY = H * diff.homeY + ai.radius + 6;
+
+    // 1) Track when the ball first crosses the reaction line (sets reaction-delay clock)
+    if (ballApproaching && ball.yPosition < reactionLineY) {
+      if (aiBotState.alertSinceMs === 0) aiBotState.alertSinceMs = now;
+    } else {
+      aiBotState.alertSinceMs = 0;
+      aiBotState.chosenAimX = null;
+      aiBotState.strikeCommitUntilMs = 0;
+    }
+
+    const reactionElapsed = aiBotState.alertSinceMs ? now - aiBotState.alertSinceMs : 0;
+    const reacting = aiBotState.alertSinceMs > 0 && reactionElapsed >= diff.reactionMs;
+
+    // 2) Decide intent
+    let targetX = ai.xPosition;
+    let targetY = homeY;
+    let speedX = diff.trackSpeed;
+    let speedY = diff.retreatSpeed;
+
+    if (reacting && ballApproaching) {
+      // Time for ball to reach paddle row (with strike line as our intercept band)
+      const interceptY = Math.max(strikeLineY, ai.yPosition);
+      const dy = ball.yPosition - interceptY;
+      const vy = Math.abs(ball.velocityY) || 1;
+      const tFrames = Math.max(1, dy / vy);
+
+      // Predict landing X with one wall bounce
+      let predX = ball.xPosition + ball.velocityX * tFrames;
+      // Reflect off side walls
+      while (predX < ai.radius || predX > W - ai.radius) {
+        if (predX < ai.radius) predX = 2 * ai.radius - predX;
+        else if (predX > W - ai.radius) predX = 2 * (W - ai.radius) - predX;
+      }
+
+      // Pick aim point on opponent goal (only once per approach so we look intentional)
+      if (aiBotState.chosenAimX === null) {
+        const goalW = W * 0.5;
+        const goalLeft = (W - goalW) / 2 + 30;
+        const goalRight = goalLeft + goalW - 60;
+        // Aim away from where the human is currently standing
+        const human = gameState.playerPaddle.xPosition;
+        aiBotState.chosenAimX = (human < W / 2)
+          ? goalRight - Math.random() * (goalW * 0.25)
+          : goalLeft + Math.random() * (goalW * 0.25);
+      }
+
+      // Add aim jitter scaled by difficulty (worse bots are wilder)
+      const jitter = (Math.random() - 0.5) * diff.aimJitter;
+      // Slight bias toward intercepting the ball center, mixed with the chosen aim
+      // (we want our paddle CENTER to push the ball toward chosenAimX after collision)
+      const aimBias = (predX - aiBotState.chosenAimX) * 0.15; // offset side of paddle
+      targetX = predX + aimBias + jitter;
+
+      // If close enough vertically, COMMIT to a forward lunge (the "strike")
+      if (ball.yPosition < strikeLineY + ai.radius * 2) {
+        // Random whiff: occasionally don't lunge
+        if (Math.random() < diff.missChance && aiBotState.strikeCommitUntilMs === 0) {
+          // pretend to strike but stop short
+          targetY = ai.yPosition + 4;
+          speedY = diff.trackSpeed * 0.5;
+        } else {
+          aiBotState.strikeCommitUntilMs = Math.max(aiBotState.strikeCommitUntilMs, now + 220);
+        }
+      }
+      speedX = diff.strikeSpeed;
+    } else if (!ballInOurHalf) {
+      // Idle: return home, occasional small feints (humans don't sit perfectly still)
+      if (now > aiBotState.feintUntilMs) {
+        if (Math.random() < diff.feintChance / 60) {
+          aiBotState.feintTargetX = W / 2 + (Math.random() - 0.5) * (W * 0.35);
+          aiBotState.feintUntilMs = now + 350 + Math.random() * 400;
+        } else {
+          aiBotState.feintTargetX = null;
+        }
+      }
+      targetX = aiBotState.feintTargetX !== null
+        ? aiBotState.feintTargetX
+        : W / 2 + (Math.random() - 0.5) * 8;
+      targetY = homeY;
+      speedX = diff.trackSpeed * 0.6;
+      speedY = diff.retreatSpeed * 0.7;
+    } else {
+      // Ball in our half but not yet "reacted" — drift toward ball x slowly (anticipation)
+      targetX = ai.xPosition + (ball.xPosition - ai.xPosition) * 0.05;
+      targetY = homeY;
+      speedX = diff.trackSpeed * 0.5;
+    }
+
+    // 3) Strike commit: keep lunging forward briefly even if conditions change
+    if (now < aiBotState.strikeCommitUntilMs) {
+      // Lunge target: a few paddle-radii past current Y, but never past midfield
+      targetY = Math.min(H / 2 - ai.radius - 8, ai.yPosition + ai.radius * 1.4);
+      speedY = diff.strikeSpeed;
+      speedX = diff.strikeSpeed;
+    }
+
+    // 4) Move toward target with capped speed
+    const dx = targetX - ai.xPosition;
+    if (Math.abs(dx) > 1.5) {
+      ai.xPosition += Math.sign(dx) * Math.min(speedX, Math.abs(dx));
+    }
+    const dyMove = targetY - ai.yPosition;
+    if (Math.abs(dyMove) > 1) {
+      ai.yPosition += Math.sign(dyMove) * Math.min(speedY, Math.abs(dyMove));
+    }
+
+    // 5) Clamp inside bot's half (allow brief lunges past home but not over midline)
+    ai.xPosition = Math.max(ai.radius, Math.min(W - ai.radius, ai.xPosition));
+    ai.yPosition = Math.max(ai.radius + 18, Math.min(H / 2 - ai.radius - 8, ai.yPosition));
+
+    aiBotState.lastBallY = ball.yPosition;
+  }
+
+  // ─── Input ───
+  function handleUserInput(x, y) {
+    if (!gameState.isGameRunning && !gameState.isPaused && !gameState.isTipsPause && !gameState.isChatPause) {
+      const dx = x - gameState.gameBall.xPosition;
+      const dy = y - gameState.gameBall.yPosition;
+      if (Math.sqrt(dx * dx + dy * dy) < gameState.gameBall.radius + 30) {
+        startBallMovement("player");
+        return;
+      }
+    }
+    if (y > gameCanvas.height / 2 && !gameState.isPaused && !gameState.isTipsPause && !gameState.isChatPause) {
+      gameState.playerPaddle.xPosition = Math.max(
+        gameState.playerPaddle.radius,
+        Math.min(gameCanvas.width - gameState.playerPaddle.radius, x)
+      );
+      gameState.playerPaddle.yPosition = Math.max(
+        gameCanvas.height / 2 + 60,
+        Math.min(gameCanvas.height - gameState.playerPaddle.radius - 30, y)
+      );
+    }
+  }
+
+  gameCanvas.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    const r = gameCanvas.getBoundingClientRect();
+    const t = e.touches[0];
+    handleUserInput(
+      (t.clientX - r.left) * (gameCanvas.width / r.width),
+      (t.clientY - r.top) * (gameCanvas.height / r.height)
+    );
+  });
+  gameCanvas.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    const r = gameCanvas.getBoundingClientRect();
+    const t = e.touches[0];
+    handleUserInput(
+      (t.clientX - r.left) * (gameCanvas.width / r.width),
+      (t.clientY - r.top) * (gameCanvas.height / r.height)
+    );
+  });
+  gameCanvas.addEventListener("mousedown", (e) => {
+    const r = gameCanvas.getBoundingClientRect();
+    handleUserInput(
+      (e.clientX - r.left) * (gameCanvas.width / r.width),
+      (e.clientY - r.top) * (gameCanvas.height / r.height)
+    );
+  });
+  gameCanvas.addEventListener("mousemove", (e) => {
+    const r = gameCanvas.getBoundingClientRect();
+    const y = (e.clientY - r.top) * (gameCanvas.height / r.height);
+    if (y > gameCanvas.height / 2) {
+      handleUserInput(
+        (e.clientX - r.left) * (gameCanvas.width / r.width), y
+      );
+    }
+  });
+
+  // ─── Score / End ───
+  function updateScoreDisplay() {
+    document.getElementById("playerScore").textContent = gameState.playerPaddle.score;
+    document.getElementById("aiScore").textContent = gameState.aiPaddle.score;
+  }
+
+  function endGame(winnerText) {
+    gameState.isGameRunning = false;
+    if (gameState.timerInterval) {
+      clearInterval(gameState.timerInterval);
+      gameState.timerInterval = null;
+    }
+    document.getElementById("winnerText").textContent = winnerText;
+    document.getElementById("finalScore").textContent =
+      `${matchConfig.teamA[0]?.name || "Opponent"} ${gameState.aiPaddle.score} - ${gameState.playerPaddle.score} ${matchConfig.teamB[0]?.name || "You"}`;
+    document.getElementById("gameOver").style.display = "flex";
+
+    // Send GAME_OVER to Layer 1
+    const result = {
+      matchId: matchConfig.matchId,
+      winnerTeam: gameState.playerPaddle.score > gameState.aiPaddle.score ? "B" : "A",
+      scoreA: gameState.aiPaddle.score,
+      scoreB: gameState.playerPaddle.score,
+      timestamp: Date.now()
+    };
+
+    // Simple hash using secret token (in production, use proper HMAC)
+    if (matchConfig.secretToken) {
+      result.hash = simpleHash(matchConfig.secretToken + JSON.stringify({
+        matchId: result.matchId,
+        winnerTeam: result.winnerTeam,
+        scoreA: result.scoreA,
+        scoreB: result.scoreB
+      }));
+    }
+
+    sendToLayer1("GAME_OVER", result);
+  }
+
+  // Simple hash for demo (production should use crypto.subtle HMAC)
+  function simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash.toString(36);
+  }
+
+  function restartGame() {
+    gameState.playerPaddle.score = 0;
+    gameState.aiPaddle.score = 0;
+    gameState.playerPaddle.xPosition = gameCanvas.width / 2;
+    gameState.playerPaddle.yPosition = gameCanvas.height * 0.85;
+    gameState.aiPaddle.xPosition = gameCanvas.width / 2;
+    gameState.aiPaddle.yPosition = gameCanvas.height * 0.15;
+    gameState.isGameStarted = false;
+    gameState.isPaused = false;
+    gameState.isTipsPause = false;
+    gameState.isChatPause = false;
+    gameState.lastScorer = null;
+    gameState.currentRound = 1;
+    gameState.roundTimeRemaining = matchConfig.roundDurationSec;
+    gameState.currentTeamAPlayer = 0;
+    gameState.currentTeamBPlayer = 0;
+    gameState.totalGoalsForRelay = 0;
+    gameState.tipsShown = [];
+    if (gameState.timerInterval) {
+      clearInterval(gameState.timerInterval);
+      gameState.timerInterval = null;
+    }
+    if (matchConfig.gameMode === "countdown") {
+      updateTimerDisplay();
+      updateRoundDisplay();
+    }
+    resetBall();
+    updateScoreDisplay();
+    updatePlayerNames();
+    document.getElementById("gameOver").style.display = "none";
+    document.getElementById("pause-btn").textContent = "Pause";
+  }
+
+  function togglePause() {
+    if (gameState.isTipsPause || gameState.isChatPause) return;
+    gameState.isPaused = !gameState.isPaused;
+    const btn = document.getElementById("pause-btn");
+    if (gameState.isPaused) {
+      btn.textContent = "Resume";
+      // Open chat overlay for multiplayer pause
+      const currentPlayer = matchConfig.teamB[gameState.currentTeamBPlayer] || { name: "You" };
+      openChat(currentPlayer.name);
+    } else {
+      btn.textContent = "Pause";
+      document.getElementById("chatOverlay").classList.remove("active");
+      gameState.isChatPause = false;
+    }
+  }
+
+  // ─── Game Loop ───
+  function gameLoop() {
+    if (!gameState.isPaused && !gameState.isTipsPause && !gameState.isChatPause) {
+      updateBallPosition();
+      updateAIPaddle();
+      checkPaddleCollision(gameState.playerPaddle);
+      checkPaddleCollision(gameState.aiPaddle);
+    }
+    gameContext.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+    drawGameField();
+    drawPaddle(gameState.playerPaddle, "#ff0066");
+    drawPaddle(gameState.aiPaddle, "#00ff66");
+    drawBall();
+    requestAnimationFrame(gameLoop);
+  }
+
+  // ─── Button Events ───
+  document.getElementById("pause-btn").addEventListener("click", () => {
+    if (gameState.isGameStarted) togglePause();
+  });
+  document.getElementById("restart-btn").addEventListener("click", restartGame);
+  document.getElementById("restart-game").addEventListener("click", restartGame);
+
+  // ─── Init ───
+  updatePlayerNames();
+  updateScoreDisplay();
+  resetBall();
+  gameLoop();
+
+  // Notify Layer 1 that Layer 2 is loaded
+  sendToLayer1("LAYER2_LOADED", { status: "loaded" });
+});
