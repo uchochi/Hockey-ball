@@ -136,7 +136,7 @@ window.addEventListener("load", function () {
 
   function sendToLayer1(type, payload) {
     if (window.parent !== window) {
-      window.parent.postMessage({ type, payload }, "*");
+      window.parent.postMessage({ type, payload }, "https://burkwin.lovable.app");
     }
   }
 
