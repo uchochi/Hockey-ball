@@ -78,34 +78,47 @@ window.addEventListener("load", function () {
   };
 
   // ─── AI Difficulty Profiles (1-7) ───
-  // Human-emulating reactive striker model.
-  //  - reactionMs: how slowly the bot starts moving once ball enters its half (lag)
-  //  - reactionLine: y ratio (0..1). When ball.y < this, bot becomes "alert" and tracks aggressively
-  //  - strikeLine: y ratio. When ball crosses this, bot lunges forward to strike
-  //  - trackSpeed / strikeSpeed: paddle px/frame in tracking vs striking modes
-  //  - aimJitter: random px noise added to predicted target (lower = more accurate)
-  //  - missChance: chance per "should-strike" that bot fakes the strike (whiff)
-  //  - feintChance: chance per second of doing a small idle feint when ball is far
-  //  - homeY ratio: where bot returns to when ball is in opponent half
+  // Human-emulating bot. Even when ball is in opponent half, the bot pre-positions
+  // along a zigzag path (continuous X+Y micro-drift) anticipating where the ball
+  // will return. When the ball approaches, it predicts intercept point ahead of time
+  // (not reactively), with prediction noise/lag scaled to difficulty.
+  //  - reactionMs: lag before reacting once ball crosses reaction line
+  //  - predictionFrames: how far ahead the bot predicts ball trajectory
+  //  - reactionLine / strikeLine: y ratios for alert / lunge zones
+  //  - trackSpeed / strikeSpeed / driftSpeed: paddle speeds
+  //  - aimJitter: px noise on aim point
+  //  - missChance: chance to whiff a strike
+  //  - feintChance: idle commit-then-cancel rate
+  //  - zigzagAmpX/Y: amplitude of anticipatory drift while idling/anticipating
+  //  - zigzagFreq: oscillation frequency (Hz). Higher = jitterier human
+  //  - homeY: idle row ratio
   const AI_PROFILES = {
-    1: { name: "Beginner",            reactionMs: 380, reactionLine: 0.42, strikeLine: 0.30, trackSpeed: 3,    strikeSpeed: 5,  retreatSpeed: 2.2, aimJitter: 140, missChance: 0.30, feintChance: 0.04, homeY: 0.13 },
-    2: { name: "Strong-Beginner",     reactionMs: 300, reactionLine: 0.45, strikeLine: 0.32, trackSpeed: 4,    strikeSpeed: 6,  retreatSpeed: 2.8, aimJitter: 110, missChance: 0.20, feintChance: 0.05, homeY: 0.13 },
-    3: { name: "Intermediate",        reactionMs: 230, reactionLine: 0.48, strikeLine: 0.35, trackSpeed: 5,    strikeSpeed: 7.5,retreatSpeed: 3.4, aimJitter: 80,  missChance: 0.13, feintChance: 0.07, homeY: 0.14 },
-    4: { name: "Strong-Intermediate", reactionMs: 170, reactionLine: 0.50, strikeLine: 0.38, trackSpeed: 6,    strikeSpeed: 9,  retreatSpeed: 4,   aimJitter: 55,  missChance: 0.08, feintChance: 0.08, homeY: 0.14 },
-    5: { name: "Advance",             reactionMs: 120, reactionLine: 0.52, strikeLine: 0.40, trackSpeed: 7.5,  strikeSpeed: 11, retreatSpeed: 4.6, aimJitter: 32,  missChance: 0.04, feintChance: 0.10, homeY: 0.15 },
-    6: { name: "Strong-Advance",      reactionMs: 80,  reactionLine: 0.55, strikeLine: 0.42, trackSpeed: 9,    strikeSpeed: 13, retreatSpeed: 5.2, aimJitter: 18,  missChance: 0.02, feintChance: 0.12, homeY: 0.15 },
-    7: { name: "The-Expert",          reactionMs: 45,  reactionLine: 0.58, strikeLine: 0.44, trackSpeed: 11,   strikeSpeed: 15, retreatSpeed: 6,   aimJitter: 8,   missChance: 0.01, feintChance: 0.14, homeY: 0.16 }
+    1: { name: "Beginner",            reactionMs: 380, predictionFrames: 8,  reactionLine: 0.42, strikeLine: 0.30, trackSpeed: 3,    strikeSpeed: 5,  retreatSpeed: 2.2, driftSpeed: 1.4, aimJitter: 140, missChance: 0.30, feintChance: 0.04, zigzagAmpX: 0.30, zigzagAmpY: 0.05, zigzagFreq: 0.35, homeY: 0.13 },
+    2: { name: "Strong-Beginner",     reactionMs: 300, predictionFrames: 12, reactionLine: 0.45, strikeLine: 0.32, trackSpeed: 4,    strikeSpeed: 6,  retreatSpeed: 2.8, driftSpeed: 1.7, aimJitter: 110, missChance: 0.20, feintChance: 0.05, zigzagAmpX: 0.28, zigzagAmpY: 0.06, zigzagFreq: 0.40, homeY: 0.13 },
+    3: { name: "Intermediate",        reactionMs: 230, predictionFrames: 18, reactionLine: 0.48, strikeLine: 0.35, trackSpeed: 5,    strikeSpeed: 7.5,retreatSpeed: 3.4, driftSpeed: 2.0, aimJitter: 80,  missChance: 0.13, feintChance: 0.07, zigzagAmpX: 0.26, zigzagAmpY: 0.07, zigzagFreq: 0.45, homeY: 0.14 },
+    4: { name: "Strong-Intermediate", reactionMs: 170, predictionFrames: 25, reactionLine: 0.50, strikeLine: 0.38, trackSpeed: 6,    strikeSpeed: 9,  retreatSpeed: 4,   driftSpeed: 2.4, aimJitter: 55,  missChance: 0.08, feintChance: 0.08, zigzagAmpX: 0.24, zigzagAmpY: 0.08, zigzagFreq: 0.50, homeY: 0.14 },
+    5: { name: "Advance",             reactionMs: 120, predictionFrames: 32, reactionLine: 0.52, strikeLine: 0.40, trackSpeed: 7.5,  strikeSpeed: 11, retreatSpeed: 4.6, driftSpeed: 2.8, aimJitter: 32,  missChance: 0.04, feintChance: 0.10, zigzagAmpX: 0.22, zigzagAmpY: 0.09, zigzagFreq: 0.55, homeY: 0.15 },
+    6: { name: "Strong-Advance",      reactionMs: 80,  predictionFrames: 42, reactionLine: 0.55, strikeLine: 0.42, trackSpeed: 9,    strikeSpeed: 13, retreatSpeed: 5.2, driftSpeed: 3.2, aimJitter: 18,  missChance: 0.02, feintChance: 0.12, zigzagAmpX: 0.20, zigzagAmpY: 0.10, zigzagFreq: 0.60, homeY: 0.15 },
+    7: { name: "The-Expert",          reactionMs: 45,  predictionFrames: 55, reactionLine: 0.58, strikeLine: 0.44, trackSpeed: 11,   strikeSpeed: 15, retreatSpeed: 6,   driftSpeed: 3.6, aimJitter: 8,   missChance: 0.01, feintChance: 0.14, zigzagAmpX: 0.18, zigzagAmpY: 0.11, zigzagFreq: 0.65, homeY: 0.16 }
   };
 
   // Per-bot persistent AI state (resets each round/serve)
   const aiBotState = {
-    alertSinceMs: 0,        // wall-clock when ball first crossed reaction line
+    alertSinceMs: 0,
     lastDecisionMs: 0,
-    feintTargetX: null,     // small offset target for idle feints
+    feintTargetX: null,
     feintUntilMs: 0,
-    chosenAimX: null,       // target x on player goal we're aiming for in current strike
-    strikeCommitUntilMs: 0, // we keep committing to a lunge until this time
-    lastBallY: 0
+    chosenAimX: null,
+    strikeCommitUntilMs: 0,
+    lastBallY: 0,
+    // Zigzag drift state (two independent sine phases per axis for non-repetitive motion)
+    zigPhaseX1: Math.random() * Math.PI * 2,
+    zigPhaseX2: Math.random() * Math.PI * 2,
+    zigPhaseY1: Math.random() * Math.PI * 2,
+    zigPhaseY2: Math.random() * Math.PI * 2,
+    // Anticipated intercept X (where bot pre-positions while ball is on opponent side)
+    anticipatedX: null,
+    anticipationRefreshMs: 0
   };
 
   function getCurrentAIDifficulty() {
@@ -679,12 +692,27 @@ window.addEventListener("load", function () {
     const W = gameCanvas.width;
 
     const ballInOurHalf = ball.yPosition < H / 2;
-    const ballApproaching = ball.velocityY < 0; // moving toward bot (top)
+    const ballApproaching = ball.velocityY < 0;
     const reactionLineY = H * diff.reactionLine;
     const strikeLineY = H * diff.strikeLine;
     const homeY = H * diff.homeY + ai.radius + 6;
 
-    // 1) Track when the ball first crosses the reaction line (sets reaction-delay clock)
+    // ── Continuous zigzag drift (humans never sit perfectly still) ──
+    // Two superposed sines with slightly different frequencies → non-repeating
+    // x and y move on independent zigzag offsets, scaled by amplitude.
+    const t = now / 1000;
+    const f = diff.zigzagFreq;
+    aiBotState.zigPhaseX1 += 0.0001; // tiny phase drift to avoid lockstep
+    const zigOffsetX = (
+      Math.sin(t * Math.PI * 2 * f + aiBotState.zigPhaseX1) * 0.6 +
+      Math.sin(t * Math.PI * 2 * f * 1.7 + aiBotState.zigPhaseX2) * 0.4
+    ) * (W * diff.zigzagAmpX);
+    const zigOffsetY = (
+      Math.sin(t * Math.PI * 2 * f * 0.8 + aiBotState.zigPhaseY1) * 0.6 +
+      Math.sin(t * Math.PI * 2 * f * 1.3 + aiBotState.zigPhaseY2) * 0.4
+    ) * (H * diff.zigzagAmpY);
+
+    // 1) Reaction-line clock (when ball crosses into our half approaching us)
     if (ballApproaching && ball.yPosition < reactionLineY) {
       if (aiBotState.alertSinceMs === 0) aiBotState.alertSinceMs = now;
     } else {
@@ -692,9 +720,30 @@ window.addEventListener("load", function () {
       aiBotState.chosenAimX = null;
       aiBotState.strikeCommitUntilMs = 0;
     }
-
     const reactionElapsed = aiBotState.alertSinceMs ? now - aiBotState.alertSinceMs : 0;
     const reacting = aiBotState.alertSinceMs > 0 && reactionElapsed >= diff.reactionMs;
+
+    // ── Ahead-of-time anticipation: predict where the ball will be when it returns
+    // to our half, refresh every ~600ms so we're not chasing every frame.
+    if (!ballInOurHalf || !ballApproaching) {
+      if (now - aiBotState.anticipationRefreshMs > 600) {
+        aiBotState.anticipationRefreshMs = now;
+        // Project ball forward `predictionFrames` frames and use that x as anchor
+        let px = ball.xPosition + ball.velocityX * diff.predictionFrames;
+        let py = ball.yPosition + ball.velocityY * diff.predictionFrames;
+        // Reflect off side walls
+        while (px < ai.radius || px > W - ai.radius) {
+          if (px < ai.radius) px = 2 * ai.radius - px;
+          else if (px > W - ai.radius) px = 2 * (W - ai.radius) - px;
+        }
+        // Reflect off bottom wall (ball coming back up)
+        if (py > H - ai.radius) py = 2 * (H - ai.radius) - py;
+        // Add prediction noise scaled to aim jitter
+        aiBotState.anticipatedX = px + (Math.random() - 0.5) * diff.aimJitter * 1.5;
+      }
+    } else if (reacting) {
+      aiBotState.anticipationRefreshMs = 0; // force fresh anticipation after rally
+    }
 
     // 2) Decide intent
     let targetX = ai.xPosition;
@@ -703,44 +752,35 @@ window.addEventListener("load", function () {
     let speedY = diff.retreatSpeed;
 
     if (reacting && ballApproaching) {
-      // Time for ball to reach paddle row (with strike line as our intercept band)
+      // Active intercept — predict landing X with one wall bounce
       const interceptY = Math.max(strikeLineY, ai.yPosition);
       const dy = ball.yPosition - interceptY;
       const vy = Math.abs(ball.velocityY) || 1;
       const tFrames = Math.max(1, dy / vy);
-
-      // Predict landing X with one wall bounce
       let predX = ball.xPosition + ball.velocityX * tFrames;
-      // Reflect off side walls
       while (predX < ai.radius || predX > W - ai.radius) {
         if (predX < ai.radius) predX = 2 * ai.radius - predX;
         else if (predX > W - ai.radius) predX = 2 * (W - ai.radius) - predX;
       }
 
-      // Pick aim point on opponent goal (only once per approach so we look intentional)
+      // Pick aim point on opponent goal (once per approach)
       if (aiBotState.chosenAimX === null) {
         const goalW = W * 0.5;
         const goalLeft = (W - goalW) / 2 + 30;
         const goalRight = goalLeft + goalW - 60;
-        // Aim away from where the human is currently standing
         const human = gameState.playerPaddle.xPosition;
         aiBotState.chosenAimX = (human < W / 2)
           ? goalRight - Math.random() * (goalW * 0.25)
           : goalLeft + Math.random() * (goalW * 0.25);
       }
 
-      // Add aim jitter scaled by difficulty (worse bots are wilder)
       const jitter = (Math.random() - 0.5) * diff.aimJitter;
-      // Slight bias toward intercepting the ball center, mixed with the chosen aim
-      // (we want our paddle CENTER to push the ball toward chosenAimX after collision)
-      const aimBias = (predX - aiBotState.chosenAimX) * 0.15; // offset side of paddle
+      const aimBias = (predX - aiBotState.chosenAimX) * 0.15;
       targetX = predX + aimBias + jitter;
+      targetY = strikeLineY + ai.radius * 0.5; // press forward toward strike line
 
-      // If close enough vertically, COMMIT to a forward lunge (the "strike")
       if (ball.yPosition < strikeLineY + ai.radius * 2) {
-        // Random whiff: occasionally don't lunge
         if (Math.random() < diff.missChance && aiBotState.strikeCommitUntilMs === 0) {
-          // pretend to strike but stop short
           targetY = ai.yPosition + 4;
           speedY = diff.trackSpeed * 0.5;
         } else {
@@ -748,32 +788,35 @@ window.addEventListener("load", function () {
         }
       }
       speedX = diff.strikeSpeed;
+      speedY = Math.max(speedY, diff.strikeSpeed * 0.7);
     } else if (!ballInOurHalf) {
-      // Idle: return home, occasional small feints (humans don't sit perfectly still)
+      // ── Ball on opponent side: pre-position around anticipated intercept,
+      //    layered with continuous zigzag so the bot never just "parks". ──
+      const anchor = aiBotState.anticipatedX !== null ? aiBotState.anticipatedX : W / 2;
+      // Idle feint commitments (occasional larger lateral fakes)
       if (now > aiBotState.feintUntilMs) {
         if (Math.random() < diff.feintChance / 60) {
-          aiBotState.feintTargetX = W / 2 + (Math.random() - 0.5) * (W * 0.35);
-          aiBotState.feintUntilMs = now + 350 + Math.random() * 400;
+          aiBotState.feintTargetX = anchor + (Math.random() - 0.5) * (W * 0.30);
+          aiBotState.feintUntilMs = now + 400 + Math.random() * 500;
         } else {
           aiBotState.feintTargetX = null;
         }
       }
-      targetX = aiBotState.feintTargetX !== null
-        ? aiBotState.feintTargetX
-        : W / 2 + (Math.random() - 0.5) * 8;
-      targetY = homeY;
-      speedX = diff.trackSpeed * 0.6;
-      speedY = diff.retreatSpeed * 0.7;
+      const baseX = aiBotState.feintTargetX !== null ? aiBotState.feintTargetX : anchor;
+      targetX = baseX + zigOffsetX;
+      targetY = homeY + zigOffsetY;
+      speedX = diff.driftSpeed;
+      speedY = diff.driftSpeed * 0.85;
     } else {
-      // Ball in our half but not yet "reacted" — drift toward ball x slowly (anticipation)
-      targetX = ai.xPosition + (ball.xPosition - ai.xPosition) * 0.05;
-      targetY = homeY;
-      speedX = diff.trackSpeed * 0.5;
+      // Ball in our half but reaction lag still pending — drift toward predicted x
+      const anchor = aiBotState.anticipatedX !== null ? aiBotState.anticipatedX : ball.xPosition;
+      targetX = anchor + zigOffsetX * 0.5;
+      targetY = homeY + zigOffsetY * 0.5;
+      speedX = diff.trackSpeed * 0.7;
     }
 
-    // 3) Strike commit: keep lunging forward briefly even if conditions change
+    // 3) Lunge commitment
     if (now < aiBotState.strikeCommitUntilMs) {
-      // Lunge target: a few paddle-radii past current Y, but never past midfield
       targetY = Math.min(H / 2 - ai.radius - 8, ai.yPosition + ai.radius * 1.4);
       speedY = diff.strikeSpeed;
       speedX = diff.strikeSpeed;
@@ -781,15 +824,15 @@ window.addEventListener("load", function () {
 
     // 4) Move toward target with capped speed
     const dx = targetX - ai.xPosition;
-    if (Math.abs(dx) > 1.5) {
+    if (Math.abs(dx) > 1) {
       ai.xPosition += Math.sign(dx) * Math.min(speedX, Math.abs(dx));
     }
     const dyMove = targetY - ai.yPosition;
-    if (Math.abs(dyMove) > 1) {
+    if (Math.abs(dyMove) > 0.8) {
       ai.yPosition += Math.sign(dyMove) * Math.min(speedY, Math.abs(dyMove));
     }
 
-    // 5) Clamp inside bot's half (allow brief lunges past home but not over midline)
+    // 5) Clamp inside bot's half
     ai.xPosition = Math.max(ai.radius, Math.min(W - ai.radius, ai.xPosition));
     ai.yPosition = Math.max(ai.radius + 18, Math.min(H / 2 - ai.radius - 8, ai.yPosition));
 
