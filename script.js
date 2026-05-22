@@ -1,5 +1,5 @@
 /**
- * Burkwin - Glow Hockey (Layer 2)
+ * GALA Game - Glow Hockey (Layer 2)
  * 
  * Features:
  * - postMessage API for Layer 1 communication
@@ -149,7 +149,7 @@ window.addEventListener("load", function () {
 
   function sendToLayer1(type, payload) {
     if (window.parent !== window) {
-      window.parent.postMessage({ type, payload }, "https://burkwin.lovable.app");
+      window.parent.postMessage({ type, payload }, "https://gala.lovable.app");
     }
   }
 
