@@ -11,6 +11,8 @@
  * - Secure GAME_OVER handshake with hash token
  */
 
+const LAYER1_URL = "https://galagamehub.vercel.app";
+
 window.addEventListener("load", function () {
 
   // ─── DOM Elements ───
@@ -149,7 +151,7 @@ window.addEventListener("load", function () {
 
   function sendToLayer1(type, payload) {
     if (window.parent !== window) {
-      window.parent.postMessage({ type, payload }, "https://gala.lovable.app");
+      window.parent.postMessage({ type, payload }, LAYER1_URL);
     }
   }
 
